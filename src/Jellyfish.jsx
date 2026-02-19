@@ -5,6 +5,7 @@ import * as particulate from "particulate";
 import "./shaders/GelShaderMaterial"; // gelShaderMaterial JSX 태그 등록
 import "./shaders/BulbShaderMaterial"; // bulbShaderMaterial JSX 태그 등록
 import "./shaders/TailShaderMaterial"; // tailShaderMaterial JSX 태그 등록
+import "./shaders/TentacleShaderMaterial"; // tentacleShaderMaterial JSX 태그 등록
 
 const FAINT_COLOR = new THREE.Color(0x415ab5); // bulbFaint (GelMaterial, 파랑)
 
@@ -545,9 +546,10 @@ export default function Jellyfish() {
   const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
   const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
   const tailMatRef = useRef(); // TailShaderMaterial (꼬리 sub-umbrella)
+  const hoodMatRef = useRef(); // TentacleShaderMaterial (외곽 와이어 Hood)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
-  const { system, ribs, tailRibs, bulbFaces, tailFaces, uvs, totalSegments } = useMemo(
+  const { system, ribs, tailRibs, links, bulbFaces, tailFaces, uvs, totalSegments } = useMemo(
     () => buildJellyfish(),
     [],
   );
@@ -571,6 +573,15 @@ export default function Jellyfish() {
 
   const tailGeo = useMemo(() => makeGeo(tailFaces), [system, tailFaces, uvs]);
 
+  // Hood Contour: system.positions를 공유, index = links 쌍 (LineSegments)
+  const linksGeo = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
+    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(links), 1));
+    return geo;
+  }, [system, links]);
+
   // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
   useFrame((_, delta) => {
     const t = (animTimeRef.current += delta);
@@ -588,12 +599,16 @@ export default function Jellyfish() {
     tailGeo.attributes.position.needsUpdate = true;
     tailGeo.attributes.positionPrev.needsUpdate = true;
 
+    linksGeo.attributes.position.needsUpdate = true;
+    linksGeo.attributes.positionPrev.needsUpdate = true;
+
     if (bulbMatRef.current) {
       bulbMatRef.current.stepProgress = phase;
       bulbMatRef.current.time = t;
     }
     if (faintMatRef.current) faintMatRef.current.stepProgress = phase;
     if (tailMatRef.current) tailMatRef.current.stepProgress = phase;
+    if (hoodMatRef.current) hoodMatRef.current.stepProgress = phase;
   });
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
@@ -630,6 +645,17 @@ export default function Jellyfish() {
           side={THREE.DoubleSide}
         />
       </mesh>
+      {/* hoodContour: 외곽 와이어 (LineSegments), AdditiveBlending */}
+      <lineSegments geometry={linksGeo}>
+        <tentacleShaderMaterial
+          ref={hoodMatRef}
+          opacity={0.35}
+          transparent
+          blending={THREE.AdditiveBlending}
+          depthTest={false}
+          depthWrite={false}
+        />
+      </lineSegments>
     </group>
   );
 }
