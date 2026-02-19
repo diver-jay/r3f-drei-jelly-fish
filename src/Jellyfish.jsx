@@ -2,6 +2,10 @@ import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import * as particulate from "particulate";
+import "./shaders/GelShaderMaterial";  // gelShaderMaterial JSX 태그 등록
+import "./shaders/BulbShaderMaterial"; // bulbShaderMaterial JSX 태그 등록
+
+const FAINT_COLOR = new THREE.Color(0x415ab5); // bulbFaint (GelMaterial, 파랑)
 
 const { sin, cos, log, floor, PI } = Math;
 const push = Array.prototype.push;
@@ -421,6 +425,8 @@ function createSkin(s, r0, r1) {
 
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
+  const bulbMatRef = useRef();  // BulbShaderMaterial (주 벨, 동적 투명도)
+  const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
   const { system, ribs, bulbFaces, uvs, totalSegments } = useMemo(
@@ -432,36 +438,57 @@ export default function Jellyfish() {
   // → tick 후 needsUpdate=true 만으로 GPU 반영 가능
   const bulbGeo = useMemo(() => {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute(
-      "position",
-      new THREE.BufferAttribute(system.positions, 3),
-    );
-    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    geo.setAttribute("position",     new THREE.BufferAttribute(system.positions,     3));
+    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3)); // lerp용 이전 프레임 위치
+    geo.setAttribute("uv",           new THREE.BufferAttribute(new Float32Array(uvs), 2));
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(bulbFaces), 1));
     geo.computeVertexNormals();
     return geo;
   }, [system, bulbFaces, uvs]);
 
-  // 매 프레임: 물리 tick → position 버퍼 갱신
+  // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
   useFrame((_, delta) => {
     const t = (animTimeRef.current += delta);
     const phase = (sin(t * PI - PI * 0.5) + 1) * 0.5; // 0→1→0 사이클
 
-    updateRibs(ribs, phase, totalSegments); // constraint 거리 갱신
-    system.tick(delta); // 물리 시뮬레이션 진행
+    updateRibs(ribs, phase, totalSegments);
+    system.tick(delta);
 
+    // position / positionPrev 둘 다 갱신 (셰이더 lerp에 필요)
     bulbGeo.attributes.position.needsUpdate = true;
+    bulbGeo.attributes.positionPrev.needsUpdate = true;
     bulbGeo.computeVertexNormals();
+
+    if (bulbMatRef.current) {
+      bulbMatRef.current.stepProgress = phase;
+      bulbMatRef.current.time = t;
+    }
+    if (faintMatRef.current) faintMatRef.current.stepProgress = phase;
   });
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
+  // 이중 레이어: bulb(주 벨, BulbMaterial, 0.95×) + bulbFaint(보조 글로우, GelMaterial, 1.05×)
   return (
     <group scale={0.05}>
-      <mesh geometry={bulbGeo}>
-        <meshNormalMaterial
-          side={THREE.DoubleSide}
+      {/* bulbFaint: 보조 파란 림 글로우, 살짝 크게 */}
+      <mesh geometry={bulbGeo} scale={1.05}>
+        <gelShaderMaterial
+          ref={faintMatRef}
+          diffuse={FAINT_COLOR}
+          opacity={0.25}
           transparent
-          opacity={0.85}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* bulb: 주 벨, 동적 UV 패턴 투명도 */}
+      <mesh geometry={bulbGeo} scale={0.95}>
+        <bulbShaderMaterial
+          ref={bulbMatRef}
+          opacity={0.75}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
         />
       </mesh>
     </group>
