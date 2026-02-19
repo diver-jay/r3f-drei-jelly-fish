@@ -110,6 +110,8 @@ function buildJellyfish() {
     innerLinks = [];
   const bulbFaces = [],
     tailFaces = [];
+  const tentLinks = [];
+  const tentacles = [];
   const queuedConstraints = [],
     weights = [];
   const ribs = [],
@@ -124,6 +126,10 @@ function buildJellyfish() {
   const ribRadiusVal = 15;
   const tailRibsCount = 15;
   const tailRibRadiusFactor = 20; // rib 아래로 내려갈수록 radiusOuter가 yParam*20 만큼 추가됨
+  const tentacleGroupStart = 6; // 촉수 첫 번째 앵커 rib 인덱스
+  const tentacleGroupOffset = 4; // 그룹 간 rib 간격
+  const tentacleGroupCount = 3; // 촉수 그룹 수
+  const tentacleWeightFactor = 1.25; // 무게 스케일 (끝이 무거워짐)
 
   // 핀 Y 위치 계산
   const tailArmSegments = 100,
@@ -155,11 +161,13 @@ function buildJellyfish() {
     links,
     innerLinks,
     bulbFaces,
+    tailFaces,
+    tentLinks,
+    tentacles,
     queuedConstraints,
     weights,
     ribs,
     tailRibs,
-    tailFaces,
     // 설정
     size,
     yOffset,
@@ -169,6 +177,12 @@ function buildJellyfish() {
     ribRadiusVal,
     tailRibsCount,
     tailRibRadiusFactor,
+    tentacleGroupStart,
+    tentacleGroupOffset,
+    tentacleGroupCount,
+    tentacleSegments,
+    tentacleSegmentLength,
+    tentacleWeightFactor,
     // 위치
     posTop,
     posMid,
@@ -190,6 +204,7 @@ function buildJellyfish() {
   createCore(s);
   createBulb(s);
   createTail(s);
+  createTentacles(s);
   createSystem(s);
 
   return s;
@@ -304,7 +319,9 @@ function createSystem(s) {
   const system = particulate.ParticleSystem.create(verts, 2);
 
   for (const c of queuedConstraints) system.addConstraint(c);
-  for (let i = 0; i < weights.length; i++) system.weights[i] = weights[i];
+  for (let i = 0; i < weights.length; i++) {
+    if (weights[i] !== undefined) system.setWeight(i, weights[i]);
+  }
 
   // 핀 파티클은 weight=0 → 힘의 영향을 받지 않음
   system.setWeight(PIN_TOP, 0);
@@ -541,15 +558,105 @@ function createTailSkin(s, r0, r1) {
   facesRings(rib0.start, rib1.start, totalSegments, tailFaces);
 }
 
+// ─── createTentacles ──────────────────────────────────────────────────────────
+// 3 그룹 촉수: 각 그룹은 지정 rib에 앵커된 36-particle 링 스택 (LineSegments)
+function createTentacles(s) {
+  const { tentacleGroupCount } = s;
+  for (let i = 0; i < tentacleGroupCount; i++) {
+    createTentacleGroup(s, i, tentacleGroupCount);
+  }
+}
+
+function createTentacleGroup(s, groupIndex, total) {
+  const { tentacleGroupStart, tentacleGroupOffset, tentacleSegments, ribs } = s;
+  const ribIndex = tentacleGroupStart + tentacleGroupOffset * groupIndex;
+  const rib = ribs[ribIndex];
+  const ratio = 1 - groupIndex / total;
+  const count = Math.floor(tentacleSegments * ratio * 0.25 + tentacleSegments * 0.75);
+
+  for (let i = 0; i < count; i++) {
+    createTentacleSegment(s, groupIndex, i, count, rib);
+    if (i > 0) {
+      linkTentacle(s, groupIndex, i - 1, i);
+    } else {
+      attachTentacles(s, groupIndex, rib);
+    }
+  }
+  attachTentaclesSpine(s, groupIndex);
+}
+
+// 촉수 링 하나: 파형 반경, yParam^3 중력 weight
+function createTentacleSegment(s, groupIndex, index, total, rib) {
+  const { verts, uvs, weights, tentacles, totalSegments } = s;
+  const { tentacleSegmentLength, tentacleWeightFactor, yOffset } = s;
+
+  const radius = rib.radius * (0.25 * sin(index * 0.25) + 0.5);
+  const yPos = -index * tentacleSegmentLength + yOffset;
+  const start = verts.length / 3;
+  const weight = (index / total) ** 3 * tentacleWeightFactor;
+
+  geomCircle(totalSegments, radius, yPos, verts);
+  for (let i = 0; i < totalSegments; i++) uvs.push(0, 0);
+
+  // 파티클별 중력 가중치 (끝으로 갈수록 무거워짐)
+  for (let i = start; i < start + totalSegments; i++) {
+    weights[i] = weight;
+  }
+
+  if (index === 0) tentacles.push([]);
+  tentacles[groupIndex].push({ start });
+}
+
+// 첫 링을 앵커 rib에 연결
+function attachTentacles(s, groupIndex, rib) {
+  const { tentacles, tentLinks, queuedConstraints, totalSegments, tentacleSegmentLength } = s;
+  const tent = tentacles[groupIndex][0];
+  const constraint = particulate.DistanceConstraint.create(
+    [tentacleSegmentLength * 0.5, tentacleSegmentLength],
+    linksRings(rib.start, tent.start, totalSegments, []),
+  );
+  queuedConstraints.push(constraint);
+  push.apply(tentLinks, constraint.indices);
+}
+
+// 인접 링 사이를 연결
+function linkTentacle(s, groupIndex, i0, i1) {
+  const { tentacles, tentLinks, innerLinks, queuedConstraints, totalSegments, tentacleSegmentLength } = s;
+  const tent0 = tentacles[groupIndex][i0];
+  const tent1 = tentacles[groupIndex][i1];
+  const constraint = particulate.DistanceConstraint.create(
+    [tentacleSegmentLength * 0.5, tentacleSegmentLength],
+    linksRings(tent0.start, tent1.start, totalSegments, []),
+  );
+  queuedConstraints.push(constraint);
+  push.apply(tentLinks, constraint.indices);
+  push.apply(innerLinks, constraint.indices);
+}
+
+// 마지막 링을 PIN_TENTACLE에 soft anchor
+function attachTentaclesSpine(s, groupIndex) {
+  const { tentacles, queuedConstraints, totalSegments, PIN_TENTACLE } = s;
+  const { tentacleSegments, tentacleSegmentLength } = s;
+  const group = tentacles[groupIndex];
+  const tent = group[group.length - 1];
+  const dist = tentacleSegments * tentacleSegmentLength;
+  const spine = particulate.DistanceConstraint.create(
+    [dist * 0.5, dist],
+    linksRadial(PIN_TENTACLE, tent.start, totalSegments, []),
+  );
+  queuedConstraints.push(spine);
+}
+
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
   const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
   const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
   const tailMatRef = useRef(); // TailShaderMaterial (꼬리 sub-umbrella)
   const hoodMatRef = useRef(); // TentacleShaderMaterial (외곽 와이어 Hood)
+  const tentMatRef = useRef(); // TentacleShaderMaterial (촉수)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
-  const { system, ribs, tailRibs, links, bulbFaces, tailFaces, uvs, totalSegments } = useMemo(
+  const { system, ribs, tailRibs, links, tentLinks, bulbFaces, tailFaces, uvs, totalSegments } = useMemo(
     () => buildJellyfish(),
     [],
   );
@@ -582,6 +689,15 @@ export default function Jellyfish() {
     return geo;
   }, [system, links]);
 
+  // Tentacles: system.positions를 공유, index = tentLinks 쌍 (LineSegments)
+  const tentGeo = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
+    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tentLinks), 1));
+    return geo;
+  }, [system, tentLinks]);
+
   // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
   useFrame((_, delta) => {
     const t = (animTimeRef.current += delta);
@@ -601,6 +717,8 @@ export default function Jellyfish() {
 
     linksGeo.attributes.position.needsUpdate = true;
     linksGeo.attributes.positionPrev.needsUpdate = true;
+    tentGeo.attributes.position.needsUpdate = true;
+    tentGeo.attributes.positionPrev.needsUpdate = true;
 
     if (bulbMatRef.current) {
       bulbMatRef.current.stepProgress = phase;
@@ -609,6 +727,7 @@ export default function Jellyfish() {
     if (faintMatRef.current) faintMatRef.current.stepProgress = phase;
     if (tailMatRef.current) tailMatRef.current.stepProgress = phase;
     if (hoodMatRef.current) hoodMatRef.current.stepProgress = phase;
+    if (tentMatRef.current) tentMatRef.current.stepProgress = phase;
   });
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
@@ -652,6 +771,18 @@ export default function Jellyfish() {
           opacity={0.35}
           transparent
           blending={THREE.AdditiveBlending}
+          depthTest={false}
+          depthWrite={false}
+        />
+      </lineSegments>
+      {/* tentacles: 3그룹 촉수 (LineSegments), 일반 블렌딩 */}
+      <lineSegments geometry={tentGeo}>
+        <tentacleShaderMaterial
+          ref={tentMatRef}
+          diffuse={new THREE.Color(0x997299)}
+          area={2000}
+          opacity={0.25}
+          transparent
           depthTest={false}
           depthWrite={false}
         />
