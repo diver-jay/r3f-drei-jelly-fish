@@ -6,10 +6,12 @@ import "./shaders/GelShaderMaterial"; // gelShaderMaterial JSX 태그 등록
 import "./shaders/BulbShaderMaterial"; // bulbShaderMaterial JSX 태그 등록
 import "./shaders/TailShaderMaterial"; // tailShaderMaterial JSX 태그 등록
 import "./shaders/TentacleShaderMaterial"; // tentacleShaderMaterial JSX 태그 등록
+import "./shaders/LerpShaderMaterial"; // lerpShaderMaterial JSX 태그 등록
 
 const FAINT_COLOR = new THREE.Color(0x415ab5); // bulbFaint (GelMaterial, 파랑)
 
-const { sin, cos, log, floor, PI } = Math;
+const { sin, cos, log, floor, round, PI } = Math;
+const PI_HALF = PI * 0.5;
 const push = Array.prototype.push;
 
 // ─── GEOM ─────────────────────────────────────────────────────────────────────
@@ -40,6 +42,11 @@ function linksRadial(center, index, count, buf) {
   for (let i = 0; i < count; i++) buf.push(center, index + i);
   return buf;
 }
+function linksLine(index, count, buf) {
+  // 연속 파티클 체인 (a→b, b→c, ...) — 초기 buf에 앵커 쌍이 포함됨
+  for (let i = 0; i < count - 1; i++) buf.push(index + i, index + i + 1);
+  return buf;
+}
 
 // ─── FACES ────────────────────────────────────────────────────────────────────
 function facesRadial(center, index, count, buf) {
@@ -47,6 +54,11 @@ function facesRadial(center, index, count, buf) {
   for (let i = 0; i < count - 1; i++)
     buf.push(center, index + i + 1, index + i);
   buf.push(center, index, index + count - 1);
+  return buf;
+}
+function facesQuadDoubleSide(a, b, c, d, buf) {
+  // 앞면 (a,b,c) + (c,d,a) + 뒷면 (d,c,b) + (b,a,d)
+  buf.push(a, b, c, c, d, a, d, c, b, b, a, d);
   return buf;
 }
 function facesRings(i0, i1, count, buf) {
@@ -109,7 +121,8 @@ function buildJellyfish() {
   const links = [],
     innerLinks = [];
   const bulbFaces = [],
-    tailFaces = [];
+    tailFaces = [],
+    mouthFaces = [];
   const tentLinks = [];
   const tentacles = [];
   const queuedConstraints = [],
@@ -134,6 +147,7 @@ function buildJellyfish() {
   // 핀 Y 위치 계산
   const tailArmSegments = 100,
     tailArmSegmentLength = 1;
+  const tailArmWeight = 0.5;
   const tentacleSegments = 120,
     tentacleSegmentLength = 1.5;
   const posTop = yOffset + size; // 60
@@ -162,6 +176,7 @@ function buildJellyfish() {
     innerLinks,
     bulbFaces,
     tailFaces,
+    mouthFaces,
     tentLinks,
     tentacles,
     queuedConstraints,
@@ -183,6 +198,9 @@ function buildJellyfish() {
     tentacleSegments,
     tentacleSegmentLength,
     tentacleWeightFactor,
+    tailArmSegments,
+    tailArmSegmentLength,
+    tailArmWeight,
     // 위치
     posTop,
     posMid,
@@ -204,6 +222,7 @@ function buildJellyfish() {
   createCore(s);
   createBulb(s);
   createTail(s);
+  createMouth(s);
   createTentacles(s);
   createSystem(s);
 
@@ -647,6 +666,130 @@ function attachTentaclesSpine(s, groupIndex) {
   queuedConstraints.push(spine);
 }
 
+// ─── createMouth ──────────────────────────────────────────────────────────────
+// 구강 팔 3 그룹: 각 그룹은 inner chain + outer chain으로 이루어진 2D 리본 arm들
+function createMouth(s) {
+  createMouthArmGroup(s, 1.0, 0, 4, 3);
+  createMouthArmGroup(s, 0.8, 1, 8, 3, 3);
+  createMouthArmGroup(s, 0.5, 7, 9, 6);
+}
+
+function createMouthArmGroup(s, vScale, r0, r1, count, offset) {
+  for (let i = 0; i < count; i++) {
+    createMouthArm(s, vScale, r0, r1, i, count, offset);
+  }
+}
+
+// 아래부터 인덱스로 rib를 반환: 0=마지막 tailRib, tailRibsCount=마지막 bellRib
+function ribAt(s, index) {
+  const { ribs, tailRibs } = s;
+  return (
+    tailRibs[tailRibs.length - index - 1] ||
+    ribs[ribs.length - index + tailRibs.length - 1]
+  );
+}
+
+// 리본 arm 하나: inner chain(중앙) + outer chain(방사형) + quadDoubleSide 면 + constraints
+function createMouthArm(s, vScale, r0, r1, index, total, offset) {
+  const { verts, uvs, weights, mouthFaces, links, tentLinks, innerLinks, queuedConstraints } = s;
+  const { totalSegments, tailArmSegments, tailArmSegmentLength, tailArmWeight, posMid, PIN_TAIL } = s;
+
+  const tParam = index / total;
+  const ribInner = ribAt(s, r0);
+  const ribOuter = ribAt(s, r1);
+  const ribIndex = (round(totalSegments * tParam) + (offset || 0)) % totalSegments;
+
+  const innerPin = ribInner.start + ribIndex;
+  const outerPin = ribOuter.start + ribIndex;
+  const scale = particulate.Vec3.distance(verts, innerPin, outerPin);
+
+  const maxSegments = tailArmSegments;
+  const segments = round(vScale * maxSegments);
+  const innerSize = tailArmSegmentLength;
+  const outerSize = innerSize * 2.4;
+  const bottomPinMax = 20 + (maxSegments - segments) * innerSize;
+
+  const innerStart = verts.length / 3;
+  const innerEnd = innerStart + segments - 1;
+  const outerStart = innerStart + segments;
+
+  // 앵커 핀 연결 포함한 체인 인덱스 (rib 파티클 → 첫 arm 파티클 → ... → 마지막)
+  const innerIndices = linksLine(innerStart, segments, [innerPin, innerStart]);
+  const outerIndices = linksLine(outerStart, segments, [outerPin, outerStart]);
+
+  const linkConstraints = [];
+  const braceIndices = [];
+  const linkIndices = [];
+
+  const outerAngle = PI * 2 * tParam;
+  const baseX = cos(outerAngle);
+  const baseZ = sin(outerAngle);
+
+  // Inner chain: 모두 원점(x=0) 에서 아래로
+  for (let i = 0; i < segments; i++) {
+    const t = i / (segments - 1);
+    geomPoint(0, posMid - i * innerSize, 0, verts);
+    uvs.push(t, 0);
+  }
+
+  // Outer chain: 방사형으로 퍼지며 아래로, 유기적 linkSize 프로필
+  let lastLinkSize = 0;
+  for (let i = 0; i < segments; i++) {
+    const t = i / (segments - 1);
+    const innerIndex = innerStart + i;
+    const outerIndex = outerStart + i;
+
+    const linkSize =
+      scale *
+      (sin(PI_HALF + 10 * t) * 0.25 + 0.75) *
+      (sin(PI_HALF + 20 * t) * 0.25 + 0.75) *
+      (sin(PI_HALF + 26 * t) * 0.15 + 0.85) *
+      sin(PI_HALF + PI * 0.45 * t);
+    lastLinkSize = linkSize;
+
+    geomPoint(baseX * linkSize, posMid - i * innerSize, baseZ * linkSize, verts);
+    uvs.push(t, 1);
+
+    // 각 세그먼트별 lateral constraint (inner ↔ outer)
+    linkConstraints.push(
+      particulate.DistanceConstraint.create([linkSize * 0.5, linkSize], [innerIndex, outerIndex]),
+    );
+
+    if (i > 10) braceIndices.push(innerIndex - 10, outerIndex);
+    if (i > 1) linkIndices.push(innerIndex - 1, outerIndex);
+    if (i > 1) facesQuadDoubleSide(innerIndex - 1, outerIndex - 1, outerIndex, innerIndex, mouthFaces);
+  }
+
+  const inner = particulate.DistanceConstraint.create([innerSize * 0.25, innerSize], innerIndices);
+  const outer = particulate.DistanceConstraint.create([outerSize * 0.25, outerSize], outerIndices);
+  const pin = particulate.DistanceConstraint.create([0, bottomPinMax], [innerEnd, PIN_TAIL]);
+
+  for (const c of linkConstraints) queuedConstraints.push(c);
+  queuedConstraints.push(inner, outer, pin);
+
+  if (braceIndices.length > 0) {
+    const brace = particulate.DistanceConstraint.create(
+      [lastLinkSize * 0.5, 1e8],
+      braceIndices,
+    );
+    queuedConstraints.push(brace);
+    push.apply(innerLinks, brace.indices);
+  }
+
+  // 파티클 무게: inner + outer 모두 tailArmWeight (0.5)
+  for (let i = innerStart; i < innerStart + segments * 2; i++) weights[i] = tailArmWeight;
+
+  push.apply(links, innerIndices);
+  push.apply(links, outerIndices);
+  push.apply(tentLinks, linkIndices);
+  push.apply(tentLinks, braceIndices);
+  push.apply(innerLinks, innerIndices);
+  push.apply(innerLinks, outerIndices);
+  push.apply(innerLinks, linkIndices);
+  push.apply(innerLinks, braceIndices);
+  push.apply(innerLinks, pin.indices);
+}
+
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
   const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
@@ -654,9 +797,11 @@ export default function Jellyfish() {
   const tailMatRef = useRef(); // TailShaderMaterial (꼬리 sub-umbrella)
   const hoodMatRef = useRef(); // TentacleShaderMaterial (외곽 와이어 Hood)
   const tentMatRef = useRef(); // TentacleShaderMaterial (촉수)
+  const mouthMatRef = useRef(); // TailShaderMaterial (구강 팔 mesh)
+  const innerMatRef = useRef(); // LerpShaderMaterial (내부 구조 와이어)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
-  const { system, ribs, tailRibs, links, tentLinks, bulbFaces, tailFaces, uvs, totalSegments } = useMemo(
+  const { system, ribs, tailRibs, links, innerLinks, tentLinks, bulbFaces, tailFaces, mouthFaces, uvs, totalSegments } = useMemo(
     () => buildJellyfish(),
     [],
   );
@@ -698,6 +843,18 @@ export default function Jellyfish() {
     return geo;
   }, [system, tentLinks]);
 
+  // Mouth: 구강 팔 mesh (mouthFaces, UV 포함)
+  const mouthGeo = useMemo(() => makeGeo(mouthFaces), [system, mouthFaces, uvs]);
+
+  // Inner Lines: 내부 구조 와이어 (innerLinks)
+  const innerLinksGeo = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
+    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(innerLinks), 1));
+    return geo;
+  }, [system, innerLinks]);
+
   // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
   useFrame((_, delta) => {
     const t = (animTimeRef.current += delta);
@@ -719,6 +876,10 @@ export default function Jellyfish() {
     linksGeo.attributes.positionPrev.needsUpdate = true;
     tentGeo.attributes.position.needsUpdate = true;
     tentGeo.attributes.positionPrev.needsUpdate = true;
+    mouthGeo.attributes.position.needsUpdate = true;
+    mouthGeo.attributes.positionPrev.needsUpdate = true;
+    innerLinksGeo.attributes.position.needsUpdate = true;
+    innerLinksGeo.attributes.positionPrev.needsUpdate = true;
 
     if (bulbMatRef.current) {
       bulbMatRef.current.stepProgress = phase;
@@ -728,6 +889,8 @@ export default function Jellyfish() {
     if (tailMatRef.current) tailMatRef.current.stepProgress = phase;
     if (hoodMatRef.current) hoodMatRef.current.stepProgress = phase;
     if (tentMatRef.current) tentMatRef.current.stepProgress = phase;
+    if (mouthMatRef.current) mouthMatRef.current.stepProgress = phase;
+    if (innerMatRef.current) innerMatRef.current.stepProgress = phase;
   });
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
@@ -783,6 +946,31 @@ export default function Jellyfish() {
           area={2000}
           opacity={0.25}
           transparent
+          depthTest={false}
+          depthWrite={false}
+        />
+      </lineSegments>
+      {/* mouth: 구강 팔 mesh, TailShaderMaterial scale=3 */}
+      <mesh geometry={mouthGeo}>
+        <tailShaderMaterial
+          ref={mouthMatRef}
+          diffuse={new THREE.Color(0xefa6f0)}
+          diffuseB={new THREE.Color(0x4a67ce)}
+          scale={3}
+          opacity={0.75 * 0.65}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* innerLines: 내부 구조 와이어, AdditiveBlending */}
+      <lineSegments geometry={innerLinksGeo}>
+        <lerpShaderMaterial
+          ref={innerMatRef}
+          diffuse={new THREE.Color(0xf99ebd)}
+          opacity={0.15}
+          transparent
+          blending={THREE.AdditiveBlending}
           depthTest={false}
           depthWrite={false}
         />

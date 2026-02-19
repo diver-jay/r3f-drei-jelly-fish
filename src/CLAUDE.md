@@ -28,6 +28,8 @@
 | Core 물리 스켈레톤 | `Jellyfish.jsx / createCore()` | 8개 특수 파티클, spine DistanceConstraint × 4, AxisConstraint × 1 |
 | Bell (Bulb) 물리 | `Jellyfish.jsx / createBulb()` | 20 ribs × 36 segments, outer/inner/skin/spine constraints |
 | Bell 애니메이션 | `Jellyfish.jsx / updateRibs()` | phase 기반 constraint 거리 동적 변경 → 펄싱 모션 |
+| Mouth Arms (구강 팔) | `Jellyfish.jsx / createMouth()` | 3 그룹 × 리본 arm, inner+outer chain, quadDoubleSide 면, TailShaderMaterial scale=3 |
+| Inner Lines (내부 와이어) | `Jellyfish.jsx` + `LerpShaderMaterial` | innerLinks 버퍼 → LineSegments, flat pink-white, AdditiveBlending |
 | BulbShaderMaterial | `shaders/BulbShaderMaterial.js`, `glsl/bulb.*` | UV 패턴 투명도, oscillate/accumulate, time-animated, 핑크↔퍼플 |
 | GelShaderMaterial | `shaders/GelShaderMaterial.js`, `glsl/gel.*` | rim-based 글로우, 파란 외곽 faint 레이어 |
 | Bloom 포스트프로세싱 | `Experience.jsx` | `@react-three/postprocessing` Bloom (intensity 2, threshold 0.1) |
