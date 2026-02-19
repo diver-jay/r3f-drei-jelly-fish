@@ -4,6 +4,7 @@ import * as THREE from "three";
 import * as particulate from "particulate";
 import "./shaders/GelShaderMaterial"; // gelShaderMaterial JSX 태그 등록
 import "./shaders/BulbShaderMaterial"; // bulbShaderMaterial JSX 태그 등록
+import "./shaders/TailShaderMaterial"; // tailShaderMaterial JSX 태그 등록
 
 const FAINT_COLOR = new THREE.Color(0x415ab5); // bulbFaint (GelMaterial, 파랑)
 
@@ -71,6 +72,13 @@ function ribRadius(t) {
   return sin(PI - PI * 0.55 * t * 1.8) + log(t * 100 + 2) / 3;
 }
 
+// 해파리 꼬리(tail) sub-umbrella 반경 커브
+// t=0: sin(PI/2)*1 = 1.0 (마지막 벨 rib와 동일 반경)
+// t→1: 빠르게 수축 (끝부분이 거의 닫힘)
+function tailRibRadius(t) {
+  return sin(0.25 * t * PI + 0.5 * PI) * (1 - 0.9 * t);
+}
+
 // 각 rib의 UV 좌표 생성
 function ribUvs(sv, count, buf) {
   for (let i = 1; i < count; i++) {
@@ -99,10 +107,12 @@ function buildJellyfish() {
     uvs = [];
   const links = [],
     innerLinks = [];
-  const bulbFaces = [];
+  const bulbFaces = [],
+    tailFaces = [];
   const queuedConstraints = [],
     weights = [];
-  const ribs = [];
+  const ribs = [],
+    tailRibs = [];
 
   // 설정값 (원본 Medusae.js 기준)
   const size = 40,
@@ -111,6 +121,8 @@ function buildJellyfish() {
   const totalSegments = segmentsCount * 3 * 3; // 36
   const ribsCount = 20;
   const ribRadiusVal = 15;
+  const tailRibsCount = 15;
+  const tailRibRadiusFactor = 20; // rib 아래로 내려갈수록 radiusOuter가 yParam*20 만큼 추가됨
 
   // 핀 Y 위치 계산
   const tailArmSegments = 100,
@@ -145,6 +157,8 @@ function buildJellyfish() {
     queuedConstraints,
     weights,
     ribs,
+    tailRibs,
+    tailFaces,
     // 설정
     size,
     yOffset,
@@ -152,6 +166,8 @@ function buildJellyfish() {
     totalSegments,
     ribsCount,
     ribRadiusVal,
+    tailRibsCount,
+    tailRibRadiusFactor,
     // 위치
     posTop,
     posMid,
@@ -172,6 +188,7 @@ function buildJellyfish() {
 
   createCore(s);
   createBulb(s);
+  createTail(s);
   createSystem(s);
 
   return s;
@@ -423,34 +440,136 @@ function createSkin(s, r0, r1) {
   facesRings(rib0.start, rib1.start, totalSegments, bulbFaces);
 }
 
+// ─── createTail ───────────────────────────────────────────────────────────────
+// sub-umbrella (종 아래 깔때기형 막): 15개 링을 위→아래로 생성
+// 첫 번째 스킨은 마지막 벨 rib와 tail rib 0을 연결 (seamless 접합)
+function createTail(s) {
+  const { tailRibsCount } = s;
+  for (let i = 0; i < tailRibsCount; i++) {
+    createTailRib(s, i, tailRibsCount);
+    createTailSkin(s, i - 1, i); // i=0일 때 r0=-1 → 마지막 벨 rib 사용
+  }
+}
+
+// 꼬리 링 하나: 반경 커브 적용 + 느슨한 outer constraint (접히는 형태)
+function createTailRib(s, index, total) {
+  const { verts, uvs, innerLinks, queuedConstraints, ribs, tailRibs } = s;
+  const { size, totalSegments, segmentsCount, tailRibRadiusFactor, IDX_MID } = s;
+
+  function queueConstraints(...args) {
+    if (args.length === 1 && Array.isArray(args[0]))
+      push.apply(queuedConstraints, args[0]);
+    else push.apply(queuedConstraints, args);
+  }
+
+  const lastRib = ribs[ribs.length - 1]; // 마지막 벨 rib (rib 19)
+  const yParam = index / total; // 0(위)→~0.93(아래)
+  const yPos = lastRib.yPos - yParam * size * 0.8; // 최대 32 units 아래로
+  const start = verts.length / 3; // 현재 verts에서 새 파티클 시작 인덱스
+
+  const radiusT = tailRibRadius(yParam); // [0..1] 형태 계수
+  const radius = radiusT * lastRib.radius; // 구조적 반경
+  const radiusOuter = radius + yParam * tailRibRadiusFactor; // 외부 constraint 기준 반경
+
+  geomCircle(totalSegments, radius, yPos, verts);
+  ribUvs(yParam, totalSegments, uvs);
+
+  // 외부 링 constraint: 벨보다 느슨한 [0.9×, 1.5×] → 접히는/펄럭이는 형태
+  const mainLen = (2 * PI * radiusOuter) / totalSegments;
+  const outerRib = particulate.DistanceConstraint.create(
+    [mainLen * 0.9, mainLen * 1.5],
+    linksLoop(start, totalSegments, []),
+  );
+
+  // 내부 삼각 sub-structure (벨과 동일 방식)
+  const innerLen = (2 * PI * radius) / 3;
+  const innerIndices = [];
+  for (let i = 0; i < segmentsCount; i++)
+    innerRibIndices(i * 3, start, totalSegments, innerIndices);
+  const innerRib = particulate.DistanceConstraint.create(
+    [innerLen * 0.8, innerLen],
+    innerIndices,
+  );
+
+  // 척추 연결: 마지막 tail rib만 IDX_MID에 방사형 연결
+  let spine;
+  if (index === total - 1) {
+    spine = particulate.DistanceConstraint.create(
+      [radius * 0.8, radius],
+      linksRadial(IDX_MID, start, totalSegments, []),
+    );
+    queueConstraints(spine);
+    push.apply(innerLinks, spine.indices);
+  }
+
+  queueConstraints(outerRib, innerRib);
+
+  tailRibs.push({
+    start,
+    radius,
+    radiusOuter,
+    yParam: 1 - yParam, // 반전 저장: 위쪽(top) rib가 펄스 진폭 최대
+    yPos,
+    outer: outerRib,
+    inner: innerRib,
+    spine,
+  });
+}
+
+// 인접 두 꼬리 링 사이: 세로 constraint + 삼각면 생성
+// r0 < 0이면 마지막 벨 rib를 사용 (seamless 접합)
+function createTailSkin(s, r0, r1) {
+  const { verts, innerLinks, tailFaces, queuedConstraints, ribs, tailRibs, totalSegments } = s;
+
+  function queueConstraints(...args) {
+    if (args.length === 1 && Array.isArray(args[0]))
+      push.apply(queuedConstraints, args[0]);
+    else push.apply(queuedConstraints, args);
+  }
+
+  const rib0 = r0 < 0 ? ribs[ribs.length - 1] : tailRibs[r0];
+  const rib1 = tailRibs[r1];
+  const dist = particulate.Vec3.distance(verts, rib0.start, rib1.start);
+  const skin = particulate.DistanceConstraint.create(
+    [dist * 0.5, dist],
+    linksRings(rib0.start, rib1.start, totalSegments, []),
+  );
+
+  queueConstraints(skin);
+  push.apply(innerLinks, skin.indices);
+  facesRings(rib0.start, rib1.start, totalSegments, tailFaces);
+}
+
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
   const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
   const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
+  const tailMatRef = useRef(); // TailShaderMaterial (꼬리 sub-umbrella)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
-  const { system, ribs, bulbFaces, uvs, totalSegments } = useMemo(
+  const { system, ribs, tailRibs, bulbFaces, tailFaces, uvs, totalSegments } = useMemo(
     () => buildJellyfish(),
     [],
   );
 
-  // system.positions Float32Array를 직접 참조하는 BufferGeometry
-  // → tick 후 needsUpdate=true 만으로 GPU 반영 가능
-  const bulbGeo = useMemo(() => {
+  // system.positions Float32Array를 직접 참조하는 공유 헬퍼
+  // bulb와 tail 모두 같은 물리 버퍼를 참조하므로, index buffer만 다름
+  function makeGeo(faces) {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute(
-      "position",
-      new THREE.BufferAttribute(system.positions, 3),
-    );
-    geo.setAttribute(
-      "positionPrev",
-      new THREE.BufferAttribute(system.positionsPrev, 3),
-    ); // lerp용 이전 프레임 위치
+    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
+    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
     geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
-    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(bulbFaces), 1));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(faces), 1));
+    return geo;
+  }
+
+  const bulbGeo = useMemo(() => {
+    const geo = makeGeo(bulbFaces);
     geo.computeVertexNormals();
     return geo;
   }, [system, bulbFaces, uvs]);
+
+  const tailGeo = useMemo(() => makeGeo(tailFaces), [system, tailFaces, uvs]);
 
   // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
   useFrame((_, delta) => {
@@ -458,22 +577,26 @@ export default function Jellyfish() {
     const phase = (sin(t * PI - PI * 0.5) + 1) * 0.5; // 0→1→0 사이클
 
     updateRibs(ribs, phase, totalSegments);
+    updateRibs(tailRibs, phase, totalSegments);
     system.tick(delta);
 
     // position / positionPrev 둘 다 갱신 (셰이더 lerp에 필요)
+    // 두 geo가 같은 Float32Array를 참조하지만 각 BufferAttribute는 독립적 → 둘 다 flagging
     bulbGeo.attributes.position.needsUpdate = true;
     bulbGeo.attributes.positionPrev.needsUpdate = true;
     bulbGeo.computeVertexNormals();
+    tailGeo.attributes.position.needsUpdate = true;
+    tailGeo.attributes.positionPrev.needsUpdate = true;
 
     if (bulbMatRef.current) {
       bulbMatRef.current.stepProgress = phase;
       bulbMatRef.current.time = t;
     }
     if (faintMatRef.current) faintMatRef.current.stepProgress = phase;
+    if (tailMatRef.current) tailMatRef.current.stepProgress = phase;
   });
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
-  // 이중 레이어: bulb(주 벨, BulbMaterial, 0.95×) + bulbFaint(보조 글로우, GelMaterial, 1.05×)
   return (
     <group scale={0.05}>
       {/* bulbFaint: 보조 파란 림 글로우, 살짝 크게 */}
@@ -491,6 +614,16 @@ export default function Jellyfish() {
       <mesh geometry={bulbGeo} scale={0.95}>
         <bulbShaderMaterial
           ref={bulbMatRef}
+          opacity={0.75}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* tail: sub-umbrella 깔때기형 막 */}
+      <mesh geometry={tailGeo} scale={0.95}>
+        <tailShaderMaterial
+          ref={tailMatRef}
           opacity={0.75}
           transparent
           depthWrite={false}

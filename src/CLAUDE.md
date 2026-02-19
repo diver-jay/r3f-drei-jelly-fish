@@ -14,3 +14,126 @@
 | #617 | 9:34 AM | 🟣 | Jellyfish physics scaffolding and helper functions implemented | ~433 |
 | #613 | 9:23 AM | 🔵 | React Three Fiber app structure for jellyfish project | ~178 |
 </claude-mem-context>
+
+---
+
+# Jellyfish — 구현 현황 & 다음 단계
+
+> 원본 레퍼런스: `/home/junhonglee/projects/particulate-medusae/static/js/items/Medusae.js`
+
+## ✅ 완료된 구현
+
+| 요소 | 파일 | 세부 내용 |
+|---|---|---|
+| Core 물리 스켈레톤 | `Jellyfish.jsx / createCore()` | 8개 특수 파티클, spine DistanceConstraint × 4, AxisConstraint × 1 |
+| Bell (Bulb) 물리 | `Jellyfish.jsx / createBulb()` | 20 ribs × 36 segments, outer/inner/skin/spine constraints |
+| Bell 애니메이션 | `Jellyfish.jsx / updateRibs()` | phase 기반 constraint 거리 동적 변경 → 펄싱 모션 |
+| BulbShaderMaterial | `shaders/BulbShaderMaterial.js`, `glsl/bulb.*` | UV 패턴 투명도, oscillate/accumulate, time-animated, 핑크↔퍼플 |
+| GelShaderMaterial | `shaders/GelShaderMaterial.js`, `glsl/gel.*` | rim-based 글로우, 파란 외곽 faint 레이어 |
+| Bloom 포스트프로세싱 | `Experience.jsx` | `@react-three/postprocessing` Bloom (intensity 2, threshold 0.1) |
+| positionPrev 서브프레임 lerp | `bulb.vert`, `gel.vert` | stepProgress uniform으로 prev↔current 보간 |
+
+---
+
+## 🔜 다음 구현 순서 (원본 Medusae.js 기준)
+
+### Phase 2 — Tail (서브-우산, 종 아래쪽 살)
+
+**원본:** `createTail()` / `createTailRib()` / `createTailSkin()` (lines 460-551)
+
+- **구조:** 15개 rib × 36 segments, Bell 마지막 rib 아래부터 좁아지는 깔때기 모양
+- **반경 커브:** `tailRibRadius(t) = sin(0.25*t*PI + 0.5*PI) * (1 - 0.9*t)` → 빠르게 수축
+- **Constraint:** outer `[mainLen*0.9, mainLen*1.5]` (Bell보다 느슨 → 접히는 형태), inner 삼각, skin
+- **마지막 rib:** `IDX_MID`와 radial spine 연결
+- **새 셰이더 필요:** `TailShaderMaterial` (`tail-frag.glsl`)
+  - `accumulate(uv, ...)` 수평 밴딩 + sin 리플
+  - `mix(diffuseB, diffuse, saturation)` — 안쪽 어두운 퍼플, 바깥 밝은 라벤더
+  - alpha: `clamp(saturation, 0.2, 1.0) * opacity`
+  - 색상: `diffuse = 0xE4BBEE` (라벤더), `diffuseB = 0x241138` (진한 퍼플)
+  - uniform: `scale = 20`
+- **opacity:** meshOpacity × 0.75
+
+---
+
+### Phase 3 — Hood Contour Lines (외곽 와이어)
+
+**원본:** `createMaterialsLines()` (lines 834-856)
+
+- **구조:** `THREE.LineSegments`, Bell rib 루프 + skin 연결선들을 선으로 렌더
+- **링크 버퍼:** `links` 배열 (outer rib loop + skin + 상단 spine radial)
+- **새 셰이더 필요:** `TentacleShaderMaterial` (`tentacle-frag.glsl`)
+  - `illumination = area / (centerDist * centerDist)` — 중심에서 역제곱 감쇠
+  - color: `mix(white, diffuse, illumination)` → 중심 흰색, 멀수록 tinted
+  - alpha: `clamp(opacity * illumination^2, 0, opacity)`
+  - `area = 1200`
+  - 색상: `diffuse = 0xffdde9` (따뜻한 핑크-흰)
+- **Blending:** AdditiveBlending, depthTest/Write off
+- **opacity:** meshOpacity × 0.35
+
+---
+
+### Phase 4 — Tentacles (촉수)
+
+**원본:** `createTentacles()` / `createTentacleGroup()` (lines 352-454)
+
+- **구조:** 3 그룹 × 36-particle 링 스택 (`LINE_SEGMENTS` 렌더)
+  - 그룹 0: ~120 세그먼트, rib 6 anchored
+  - 그룹 1: ~110 세그먼트, rib 10 anchored
+  - 그룹 2: ~100 세그먼트, rib 14 anchored
+- **파티클 weight:** `t^3 * 1.25` — 끝으로 갈수록 중력 영향 증가
+- **Constraint:** 링↔링 DistanceConstraint `[dist*0.5, dist]`, 끝은 `PIN_TENTACLE`에 soft anchor
+- **렌더:** `THREE.LineSegments` (면이 아닌 선), TentacleShaderMaterial 재사용
+  - `area = 2000`, 색상: `diffuse = 0x997299` (뮤트 퍼플-그레이)
+- **opacity:** meshOpacity × 0.25
+
+---
+
+### Phase 5 — Mouth Arms (구강 팔)
+
+**원본:** `createMouth()` / `createMouthArm()` (lines 557-673)
+
+- **구조:** 3 그룹, 그룹당 2~6개 2D 리본 arm (inner chain + outer chain → `quadDoubleSide` 면)
+  - linkSize 공식으로 유기적 물결 프로필
+  - UV: inner `(t, 0)`, outer `(t, 1)`
+- **Constraint:** inner chain, outer chain, 측면 lateral brace, diagonal brace, `PIN_TAIL` soft pin
+- **파티클 weight:** 0.5 (일반의 절반, 더 유연)
+- **렌더:** Mesh + TailShaderMaterial (Phase 2에서 구현)
+  - `scale = 3` (Tail의 20과 다름 — 낮은 주파수 밴딩)
+  - 색상: `diffuse = 0xEFA6F0` (연핑크-퍼플), `diffuseB = 0x4A67CE` (파랑)
+- **opacity:** meshOpacity × 0.65
+
+---
+
+### Phase 6 — Ambient Dust (수중 파티클)
+
+**원본:** `/home/junhonglee/projects/particulate-medusae/static/js/items/Dust.js`
+
+- **구조:** 완전히 독립된 시스템, 8,000개 점 파티클 300 unit 큐브에 분산
+- **새 셰이더 필요:** `DustShaderMaterial` (`dust-vert.glsl`, `dust-frag.glsl`)
+  - vert: `offsetY = mod(position.y - time, area)` → 무한 위로 스크롤
+  - vert: X/Z 흔들림: `sin(cos(offsetY*0.1) + sin(...))` → 자연스러운 부유
+  - frag: `illumination = max(0, (radius - centerDist) / radius)` → 선형 감쇠
+  - frag: alpha `illumination^2`
+- **Texture:** 64×64 소프트 블롭 (2-ring)
+- **time 업데이트:** `+= delta * 0.005` (느린 속도)
+
+---
+
+### Phase 7 — 추가 포스트프로세싱
+
+**원본:** `MainScene.js` BloomPass + LensDirtPass + VignettePass
+
+- **Vignette:** 화면 가장자리 어둡게 (`darkness 0.5, offset 1.25, edge color 0x07070C`)
+- **LensDirt:** 마우스 클릭 시 렌즈 플레어 효과 (선택적)
+
+---
+
+## 🗂 참고 파일 매핑
+
+| 원본 셰이더 | 현재 구현 | 용도 |
+|---|---|---|
+| `gel-frag.glsl` | `src/glsl/gel.frag` | ✅ rim 글로우 |
+| `bulb-frag.glsl` | `src/glsl/bulb.frag` | ✅ UV 패턴 투명도 |
+| `tail-frag.glsl` | — | ❌ Tail + Mouth arms |
+| `tentacle-frag.glsl` | — | ❌ 촉수 + 외곽 와이어 |
+| `dust-vert/frag.glsl` | — | ❌ 수중 파티클 |
