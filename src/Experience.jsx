@@ -18,9 +18,9 @@ export default function Experience() {
       {/* 원본과 동일한 Bloom 효과: strength=0.8 */}
       <EffectComposer>
         <Bloom
-          intensity={0.8}
-          luminanceThreshold={0.2}
-          luminanceSmoothing={0.8}
+          intensity={2}
+          luminanceThreshold={0.1}
+          luminanceSmoothing={0.7}
         />
       </EffectComposer>
     </>

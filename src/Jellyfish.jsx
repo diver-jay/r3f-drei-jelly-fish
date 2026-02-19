@@ -2,7 +2,7 @@ import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import * as particulate from "particulate";
-import "./shaders/GelShaderMaterial";  // gelShaderMaterial JSX 태그 등록
+import "./shaders/GelShaderMaterial"; // gelShaderMaterial JSX 태그 등록
 import "./shaders/BulbShaderMaterial"; // bulbShaderMaterial JSX 태그 등록
 
 const FAINT_COLOR = new THREE.Color(0x415ab5); // bulbFaint (GelMaterial, 파랑)
@@ -425,7 +425,7 @@ function createSkin(s, r0, r1) {
 
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
-  const bulbMatRef = useRef();  // BulbShaderMaterial (주 벨, 동적 투명도)
+  const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
   const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
@@ -438,9 +438,15 @@ export default function Jellyfish() {
   // → tick 후 needsUpdate=true 만으로 GPU 반영 가능
   const bulbGeo = useMemo(() => {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position",     new THREE.BufferAttribute(system.positions,     3));
-    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3)); // lerp용 이전 프레임 위치
-    geo.setAttribute("uv",           new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(system.positions, 3),
+    );
+    geo.setAttribute(
+      "positionPrev",
+      new THREE.BufferAttribute(system.positionsPrev, 3),
+    ); // lerp용 이전 프레임 위치
+    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(bulbFaces), 1));
     geo.computeVertexNormals();
     return geo;
@@ -475,7 +481,7 @@ export default function Jellyfish() {
         <gelShaderMaterial
           ref={faintMatRef}
           diffuse={FAINT_COLOR}
-          opacity={0.25}
+          opacity={0.05}
           transparent
           depthWrite={false}
           side={THREE.DoubleSide}
