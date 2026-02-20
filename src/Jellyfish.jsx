@@ -365,8 +365,10 @@ function createSystem(s) {
     particulate.PointConstraint.create([0, posTentacle, 0], PIN_TENTACLE),
   );
 
-  // 300 tick 사전 완화: 시작부터 안정된 형태로 렌더링
-  for (let i = 0; i < 300; i++) system.tick(1);
+  // 중력 (원본 MainScene.initForces 기준, gravity = -2)
+  // 원본 Medusae.js에는 pre-relaxation이 없음 — 파티클 초기 위치가 geomCircle로 정확히 배치되므로 불필요
+  // tick(1) 큰 스텝으로 pre-relaxation 하면 verlet velocity가 생겨 애니메이션 시작 시 폭발함
+  system.addForce(particulate.DirectionalForce.create([0, -2, 0]));
 
   s.system = system;
 }
@@ -792,6 +794,10 @@ function createMouthArm(s, vScale, r0, r1, index, total, offset) {
 
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
+  const groupRef = useRef();      // Three.js group — world position 이동에 사용
+  const swimYRef = useRef(0);     // 누적 world Y 위치
+  const swimVelRef = useRef(0);   // 현재 상승 속도 (수축 임펄스 + 감속)
+  const prevPhaseRef = useRef(0); // 이전 프레임 phase (수축 감지용)
   const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
   const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
   const tailMatRef = useRef(); // TailShaderMaterial (꼬리 sub-umbrella)
@@ -860,6 +866,25 @@ export default function Jellyfish() {
     const t = (animTimeRef.current += delta);
     const phase = (sin(t * PI - PI * 0.5) + 1) * 0.5; // 0→1→0 사이클
 
+    // ── 펄스 연동 상승 이동 ──────────────────────────────────────────────
+    // phase 감소 = bell 수축 = 추진 임펄스 / phase 증가 = bell 확장 = 감속
+    const phaseDelta = phase - prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+
+    if (phaseDelta < 0) {
+      // 수축 구간: 감소량에 비례한 velocity 임펄스
+      swimVelRef.current += Math.abs(phaseDelta) * 2.0;
+    }
+    swimVelRef.current *= 0.97; // 수중 저항(drag)
+
+    swimYRef.current += swimVelRef.current * delta;
+
+    if (groupRef.current) {
+      groupRef.current.position.y = swimYRef.current;
+      console.log("jellyfish y:", swimYRef.current.toFixed(3), "vel:", swimVelRef.current.toFixed(3));
+    }
+    // ────────────────────────────────────────────────────────────────────
+
     updateRibs(ribs, phase, totalSegments);
     updateRibs(tailRibs, phase, totalSegments);
     system.tick(delta);
@@ -895,7 +920,7 @@ export default function Jellyfish() {
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
   return (
-    <group scale={0.05}>
+    <group ref={groupRef} scale={0.05}>
       {/* bulbFaint: 보조 파란 림 글로우, 살짝 크게 */}
       <mesh geometry={bulbGeo} scale={1.05}>
         <gelShaderMaterial

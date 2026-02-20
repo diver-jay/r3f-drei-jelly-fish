@@ -2,7 +2,6 @@ import { OrbitControls } from "@react-three/drei";
 import { Perf } from "r3f-perf";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import Jellyfish from "./Jellyfish";
-import JellyfishPoints from "./JellyfishPoints";
 
 export default function Experience() {
   return (
