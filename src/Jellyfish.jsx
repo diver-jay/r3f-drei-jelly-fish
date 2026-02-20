@@ -148,7 +148,7 @@ function buildJellyfish() {
   const tailArmSegments = 100,
     tailArmSegmentLength = 1;
   const tailArmWeight = 0.5;
-  const tentacleSegments = 120,
+  const tentacleSegments = 67,
     tentacleSegmentLength = 1.5;
   const posTop = yOffset + size; // 60
   const posMid = yOffset; // 20
@@ -365,12 +365,12 @@ function createSystem(s) {
     particulate.PointConstraint.create([0, posTentacle, 0], PIN_TENTACLE),
   );
 
-  // 중력 (원본 MainScene.initForces 기준, gravity = -2)
-  // 원본 Medusae.js에는 pre-relaxation이 없음 — 파티클 초기 위치가 geomCircle로 정확히 배치되므로 불필요
-  // tick(1) 큰 스텝으로 pre-relaxation 하면 verlet velocity가 생겨 애니메이션 시작 시 폭발함
-  system.addForce(particulate.DirectionalForce.create([0, -2, 0]));
+  // 중력 (기본값 -2, useFrame에서 phase에 따라 동적으로 업데이트)
+  const gravityForce = particulate.DirectionalForce.create([0, -2, 0]);
+  system.addForce(gravityForce);
 
   s.system = system;
+  s.gravityForce = gravityForce;
 }
 
 // ─── createBulb ───────────────────────────────────────────────────────────────
@@ -493,7 +493,8 @@ function createTail(s) {
 // 꼬리 링 하나: 반경 커브 적용 + 느슨한 outer constraint (접히는 형태)
 function createTailRib(s, index, total) {
   const { verts, uvs, innerLinks, queuedConstraints, ribs, tailRibs } = s;
-  const { size, totalSegments, segmentsCount, tailRibRadiusFactor, IDX_MID } = s;
+  const { size, totalSegments, segmentsCount, tailRibRadiusFactor, IDX_MID } =
+    s;
 
   function queueConstraints(...args) {
     if (args.length === 1 && Array.isArray(args[0]))
@@ -558,7 +559,15 @@ function createTailRib(s, index, total) {
 // 인접 두 꼬리 링 사이: 세로 constraint + 삼각면 생성
 // r0 < 0이면 마지막 벨 rib를 사용 (seamless 접합)
 function createTailSkin(s, r0, r1) {
-  const { verts, innerLinks, tailFaces, queuedConstraints, ribs, tailRibs, totalSegments } = s;
+  const {
+    verts,
+    innerLinks,
+    tailFaces,
+    queuedConstraints,
+    ribs,
+    tailRibs,
+    totalSegments,
+  } = s;
 
   function queueConstraints(...args) {
     if (args.length === 1 && Array.isArray(args[0]))
@@ -593,7 +602,9 @@ function createTentacleGroup(s, groupIndex, total) {
   const ribIndex = tentacleGroupStart + tentacleGroupOffset * groupIndex;
   const rib = ribs[ribIndex];
   const ratio = 1 - groupIndex / total;
-  const count = Math.floor(tentacleSegments * ratio * 0.25 + tentacleSegments * 0.75);
+  const count = Math.floor(
+    tentacleSegments * ratio * 0.25 + tentacleSegments * 0.75,
+  );
 
   for (let i = 0; i < count; i++) {
     createTentacleSegment(s, groupIndex, i, count, rib);
@@ -630,7 +641,13 @@ function createTentacleSegment(s, groupIndex, index, total, rib) {
 
 // 첫 링을 앵커 rib에 연결
 function attachTentacles(s, groupIndex, rib) {
-  const { tentacles, tentLinks, queuedConstraints, totalSegments, tentacleSegmentLength } = s;
+  const {
+    tentacles,
+    tentLinks,
+    queuedConstraints,
+    totalSegments,
+    tentacleSegmentLength,
+  } = s;
   const tent = tentacles[groupIndex][0];
   const constraint = particulate.DistanceConstraint.create(
     [tentacleSegmentLength * 0.5, tentacleSegmentLength],
@@ -642,7 +659,14 @@ function attachTentacles(s, groupIndex, rib) {
 
 // 인접 링 사이를 연결
 function linkTentacle(s, groupIndex, i0, i1) {
-  const { tentacles, tentLinks, innerLinks, queuedConstraints, totalSegments, tentacleSegmentLength } = s;
+  const {
+    tentacles,
+    tentLinks,
+    innerLinks,
+    queuedConstraints,
+    totalSegments,
+    tentacleSegmentLength,
+  } = s;
   const tent0 = tentacles[groupIndex][i0];
   const tent1 = tentacles[groupIndex][i1];
   const constraint = particulate.DistanceConstraint.create(
@@ -693,13 +717,30 @@ function ribAt(s, index) {
 
 // 리본 arm 하나: inner chain(중앙) + outer chain(방사형) + quadDoubleSide 면 + constraints
 function createMouthArm(s, vScale, r0, r1, index, total, offset) {
-  const { verts, uvs, weights, mouthFaces, links, tentLinks, innerLinks, queuedConstraints } = s;
-  const { totalSegments, tailArmSegments, tailArmSegmentLength, tailArmWeight, posMid, PIN_TAIL } = s;
+  const {
+    verts,
+    uvs,
+    weights,
+    mouthFaces,
+    links,
+    tentLinks,
+    innerLinks,
+    queuedConstraints,
+  } = s;
+  const {
+    totalSegments,
+    tailArmSegments,
+    tailArmSegmentLength,
+    tailArmWeight,
+    posMid,
+    PIN_TAIL,
+  } = s;
 
   const tParam = index / total;
   const ribInner = ribAt(s, r0);
   const ribOuter = ribAt(s, r1);
-  const ribIndex = (round(totalSegments * tParam) + (offset || 0)) % totalSegments;
+  const ribIndex =
+    (round(totalSegments * tParam) + (offset || 0)) % totalSegments;
 
   const innerPin = ribInner.start + ribIndex;
   const outerPin = ribOuter.start + ribIndex;
@@ -749,22 +790,46 @@ function createMouthArm(s, vScale, r0, r1, index, total, offset) {
       sin(PI_HALF + PI * 0.45 * t);
     lastLinkSize = linkSize;
 
-    geomPoint(baseX * linkSize, posMid - i * innerSize, baseZ * linkSize, verts);
+    geomPoint(
+      baseX * linkSize,
+      posMid - i * innerSize,
+      baseZ * linkSize,
+      verts,
+    );
     uvs.push(t, 1);
 
     // 각 세그먼트별 lateral constraint (inner ↔ outer)
     linkConstraints.push(
-      particulate.DistanceConstraint.create([linkSize * 0.5, linkSize], [innerIndex, outerIndex]),
+      particulate.DistanceConstraint.create(
+        [linkSize * 0.5, linkSize],
+        [innerIndex, outerIndex],
+      ),
     );
 
     if (i > 10) braceIndices.push(innerIndex - 10, outerIndex);
     if (i > 1) linkIndices.push(innerIndex - 1, outerIndex);
-    if (i > 1) facesQuadDoubleSide(innerIndex - 1, outerIndex - 1, outerIndex, innerIndex, mouthFaces);
+    if (i > 1)
+      facesQuadDoubleSide(
+        innerIndex - 1,
+        outerIndex - 1,
+        outerIndex,
+        innerIndex,
+        mouthFaces,
+      );
   }
 
-  const inner = particulate.DistanceConstraint.create([innerSize * 0.25, innerSize], innerIndices);
-  const outer = particulate.DistanceConstraint.create([outerSize * 0.25, outerSize], outerIndices);
-  const pin = particulate.DistanceConstraint.create([0, bottomPinMax], [innerEnd, PIN_TAIL]);
+  const inner = particulate.DistanceConstraint.create(
+    [innerSize * 0.25, innerSize],
+    innerIndices,
+  );
+  const outer = particulate.DistanceConstraint.create(
+    [outerSize * 0.25, outerSize],
+    outerIndices,
+  );
+  const pin = particulate.DistanceConstraint.create(
+    [0, bottomPinMax],
+    [innerEnd, PIN_TAIL],
+  );
 
   for (const c of linkConstraints) queuedConstraints.push(c);
   queuedConstraints.push(inner, outer, pin);
@@ -779,7 +844,8 @@ function createMouthArm(s, vScale, r0, r1, index, total, offset) {
   }
 
   // 파티클 무게: inner + outer 모두 tailArmWeight (0.5)
-  for (let i = innerStart; i < innerStart + segments * 2; i++) weights[i] = tailArmWeight;
+  for (let i = innerStart; i < innerStart + segments * 2; i++)
+    weights[i] = tailArmWeight;
 
   push.apply(links, innerIndices);
   push.apply(links, outerIndices);
@@ -794,9 +860,9 @@ function createMouthArm(s, vScale, r0, r1, index, total, offset) {
 
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
-  const groupRef = useRef();      // Three.js group — world position 이동에 사용
-  const swimYRef = useRef(0);     // 누적 world Y 위치
-  const swimVelRef = useRef(0);   // 현재 상승 속도 (수축 임펄스 + 감속)
+  const groupRef = useRef(); // Three.js group — world position 이동에 사용
+  const swimYRef = useRef(0); // 누적 world Y 위치
+  const swimVelRef = useRef(0); // 현재 상승 속도 (수축 임펄스 + 감속)
   const prevPhaseRef = useRef(0); // 이전 프레임 phase (수축 감지용)
   const bulbMatRef = useRef(); // BulbShaderMaterial (주 벨, 동적 투명도)
   const faintMatRef = useRef(); // GelShaderMaterial (보조 림 글로우)
@@ -807,17 +873,33 @@ export default function Jellyfish() {
   const innerMatRef = useRef(); // LerpShaderMaterial (내부 구조 와이어)
 
   // 한 번만 빌드: 물리 시스템 + 버퍼 데이터
-  const { system, ribs, tailRibs, links, innerLinks, tentLinks, bulbFaces, tailFaces, mouthFaces, uvs, totalSegments } = useMemo(
-    () => buildJellyfish(),
-    [],
-  );
+  const {
+    system,
+    gravityForce,
+    ribs,
+    tailRibs,
+    links,
+    innerLinks,
+    tentLinks,
+    bulbFaces,
+    tailFaces,
+    mouthFaces,
+    uvs,
+    totalSegments,
+  } = useMemo(() => buildJellyfish(), []);
 
   // system.positions Float32Array를 직접 참조하는 공유 헬퍼
   // bulb와 tail 모두 같은 물리 버퍼를 참조하므로, index buffer만 다름
   function makeGeo(faces) {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
-    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(system.positions, 3),
+    );
+    geo.setAttribute(
+      "positionPrev",
+      new THREE.BufferAttribute(system.positionsPrev, 3),
+    );
     geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(faces), 1));
     return geo;
@@ -834,8 +916,14 @@ export default function Jellyfish() {
   // Hood Contour: system.positions를 공유, index = links 쌍 (LineSegments)
   const linksGeo = useMemo(() => {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
-    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(system.positions, 3),
+    );
+    geo.setAttribute(
+      "positionPrev",
+      new THREE.BufferAttribute(system.positionsPrev, 3),
+    );
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(links), 1));
     return geo;
   }, [system, links]);
@@ -843,26 +931,41 @@ export default function Jellyfish() {
   // Tentacles: system.positions를 공유, index = tentLinks 쌍 (LineSegments)
   const tentGeo = useMemo(() => {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
-    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(system.positions, 3),
+    );
+    geo.setAttribute(
+      "positionPrev",
+      new THREE.BufferAttribute(system.positionsPrev, 3),
+    );
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tentLinks), 1));
     return geo;
   }, [system, tentLinks]);
 
   // Mouth: 구강 팔 mesh (mouthFaces, UV 포함)
-  const mouthGeo = useMemo(() => makeGeo(mouthFaces), [system, mouthFaces, uvs]);
+  const mouthGeo = useMemo(
+    () => makeGeo(mouthFaces),
+    [system, mouthFaces, uvs],
+  );
 
   // Inner Lines: 내부 구조 와이어 (innerLinks)
   const innerLinksGeo = useMemo(() => {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(system.positions, 3));
-    geo.setAttribute("positionPrev", new THREE.BufferAttribute(system.positionsPrev, 3));
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(system.positions, 3),
+    );
+    geo.setAttribute(
+      "positionPrev",
+      new THREE.BufferAttribute(system.positionsPrev, 3),
+    );
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(innerLinks), 1));
     return geo;
   }, [system, innerLinks]);
 
   // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const t = (animTimeRef.current += delta);
     const phase = (sin(t * PI - PI * 0.5) + 1) * 0.5; // 0→1→0 사이클
 
@@ -881,9 +984,23 @@ export default function Jellyfish() {
 
     if (groupRef.current) {
       groupRef.current.position.y = swimYRef.current;
-      console.log("jellyfish y:", swimYRef.current.toFixed(3), "vel:", swimVelRef.current.toFixed(3));
+      console.log(
+        "jellyfish y:",
+        swimYRef.current.toFixed(3),
+        "vel:",
+        swimVelRef.current.toFixed(3),
+      );
+    }
+
+    // 카메라 target을 해파리 중심에 고정 (local posMid=20 * scale=0.05 = 1.0)
+    if (state.controls) {
+      state.controls.target.y = swimYRef.current + 1.0;
     }
     // ────────────────────────────────────────────────────────────────────
+
+    // 중력 동적 업데이트: 이완(phase↑) → 촉수 길게, 수축(phase↓) + 추진(vel↑) → 촉수 당겨짐
+    // phase=0(수축): -2 / phase=1(이완): -5 / swimVel 높을수록 추가 -
+    gravityForce.set(0, -2 - phase * 3 - swimVelRef.current * 1.5, 0);
 
     updateRibs(ribs, phase, totalSegments);
     updateRibs(tailRibs, phase, totalSegments);
@@ -988,18 +1105,6 @@ export default function Jellyfish() {
           side={THREE.DoubleSide}
         />
       </mesh>
-      {/* innerLines: 내부 구조 와이어, AdditiveBlending */}
-      <lineSegments geometry={innerLinksGeo}>
-        <lerpShaderMaterial
-          ref={innerMatRef}
-          diffuse={new THREE.Color(0xf99ebd)}
-          opacity={0.15}
-          transparent
-          blending={THREE.AdditiveBlending}
-          depthTest={false}
-          depthWrite={false}
-        />
-      </lineSegments>
     </group>
   );
 }
