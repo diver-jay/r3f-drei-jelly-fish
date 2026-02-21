@@ -966,7 +966,8 @@ export default function Jellyfish() {
 
   // 매 프레임: 물리 tick → position 버퍼 갱신 + stepProgress 동기화
   useFrame((state, delta) => {
-    const t = (animTimeRef.current += delta);
+    const clampedDelta = Math.min(delta, 1 / 30);
+    const t = (animTimeRef.current += clampedDelta);
     const phase = (sin(t * PI - PI * 0.5) + 1) * 0.5; // 0→1→0 사이클
 
     // ── 펄스 연동 상승 이동 ──────────────────────────────────────────────
@@ -980,7 +981,7 @@ export default function Jellyfish() {
     }
     swimVelRef.current *= 0.97; // 수중 저항(drag)
 
-    swimYRef.current += swimVelRef.current * delta;
+    swimYRef.current += swimVelRef.current * clampedDelta;
 
     if (groupRef.current) {
       groupRef.current.position.y = swimYRef.current;
@@ -1004,7 +1005,7 @@ export default function Jellyfish() {
 
     updateRibs(ribs, phase, totalSegments);
     updateRibs(tailRibs, phase, totalSegments);
-    system.tick(delta);
+    system.tick(clampedDelta);
 
     // position / positionPrev 둘 다 갱신 (셰이더 lerp에 필요)
     // 두 geo가 같은 Float32Array를 참조하지만 각 BufferAttribute는 독립적 → 둘 다 flagging
