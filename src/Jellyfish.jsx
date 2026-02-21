@@ -10,6 +10,14 @@ import "./shaders/LerpShaderMaterial"; // lerpShaderMaterial JSX 태그 등록
 
 const FAINT_COLOR = new THREE.Color(0x415ab5); // bulbFaint (GelMaterial, 파랑)
 
+// Hover 색상 보간용 상수 (모듈 레벨에서 한 번만 생성)
+// hover 시 HDR 값(>1.0)으로 올려 기존 Bloom이 훨씬 강하게 반응하도록 유도
+const BULB_DIFFUSE_BASE   = new THREE.Color(0xffa9d2);        // 기본 핑크 (0~1)
+const BULB_DIFFUSE_HOVER  = new THREE.Color(3.0, 2.0, 2.6);  // HDR 밝은 핑크 → Bloom 강제 유발
+const BULB_DIFFUSEB_BASE  = new THREE.Color(0x70256c);        // 기본 다크 퍼플
+const BULB_DIFFUSEB_HOVER = new THREE.Color(0.2, 0.04, 0.18);// 더 어둡게 → 대비 극대화
+const FAINT_DIFFUSE_HOVER = new THREE.Color(1.5, 2.0, 5.0);  // HDR 파랑 → rim 강한 블루 글로우
+
 const { sin, cos, log, floor, round, PI } = Math;
 const PI_HALF = PI * 0.5;
 const push = Array.prototype.push;
@@ -860,6 +868,8 @@ function createMouthArm(s, vScale, r0, r1, index, total, offset) {
 
 export default function Jellyfish() {
   const animTimeRef = useRef(0);
+  const isHoveredRef = useRef(false);   // 현재 hover 여부
+  const hoverProgressRef = useRef(0);   // 0 → 1 lerp 진행값 (re-render 없이 useFrame에서만 사용)
   const groupRef = useRef(); // Three.js group — world position 이동에 사용
   const swimYRef = useRef(0); // 누적 world Y 위치
   const swimVelRef = useRef(0); // 현재 상승 속도 (수축 임펄스 + 감속)
@@ -985,12 +995,6 @@ export default function Jellyfish() {
 
     if (groupRef.current) {
       groupRef.current.position.y = swimYRef.current;
-      console.log(
-        "jellyfish y:",
-        swimYRef.current.toFixed(3),
-        "vel:",
-        swimVelRef.current.toFixed(3),
-      );
     }
 
     // 카메라 target을 해파리 중심에 고정 (local posMid=20 * scale=0.05 = 1.0)
@@ -1034,11 +1038,45 @@ export default function Jellyfish() {
     if (tentMatRef.current) tentMatRef.current.stepProgress = phase;
     if (mouthMatRef.current) mouthMatRef.current.stepProgress = phase;
     if (innerMatRef.current) innerMatRef.current.stepProgress = phase;
+
+    // ── Hover 색상 전환 ─────────────────────────────────────────────────────
+    // HDR 색상(>1.0) + 기존 Bloom 활용: 추가 렌더링 패스 없이 강한 글로우 효과
+    const hoverTarget = isHoveredRef.current ? 1 : 0;
+    hoverProgressRef.current += (hoverTarget - hoverProgressRef.current) * 0.1;
+    const hp = hoverProgressRef.current;
+
+    if (bulbMatRef.current) {
+      bulbMatRef.current.diffuse.lerpColors(BULB_DIFFUSE_BASE, BULB_DIFFUSE_HOVER, hp);
+      bulbMatRef.current.diffuseB.lerpColors(BULB_DIFFUSEB_BASE, BULB_DIFFUSEB_HOVER, hp);
+      bulbMatRef.current.opacity = 0.75 + hp * 0.2;
+    }
+    if (faintMatRef.current) {
+      // rim 글로우: 색상도 HDR 파랑으로 → Bloom이 강한 블루 헤일로 생성
+      faintMatRef.current.diffuse.lerpColors(FAINT_COLOR, FAINT_DIFFUSE_HOVER, hp);
+      faintMatRef.current.opacity = 0.05 + hp * 0.65;
+    }
+    if (hoodMatRef.current) {
+      hoodMatRef.current.opacity = 0.35 + hp * 0.55;
+    }
+    if (tailMatRef.current) {
+      tailMatRef.current.opacity = 0.75 + hp * 0.2;
+    }
+    // ──────────────────────────────────────────────────────────────────────────
   });
 
   // scale=0.05: 원본 단위(~60 units)를 씬에 맞게 축소
   return (
     <group ref={groupRef} scale={0.05}>
+      {/* hitSphere: 투명 구형 — 안정적인 hover 감지용
+          반경 45: bell 최대 반경(~35) + 여유 → 어느 각도에서도 쉽게 hover */}
+      <mesh
+        position={[0, 40, 0]}
+        onPointerEnter={() => { isHoveredRef.current = true;  document.body.style.cursor = "pointer"; }}
+        onPointerLeave={() => { isHoveredRef.current = false; document.body.style.cursor = "auto"; }}
+      >
+        <sphereGeometry args={[70, 8, 8]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
       {/* bulbFaint: 보조 파란 림 글로우, 살짝 크게 */}
       <mesh geometry={bulbGeo} scale={1.05}>
         <gelShaderMaterial
